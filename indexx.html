@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Chat</title>
+</head>
+<body>
+    <h2>Voice Chat</h2>
+    <input id="username" placeholder="Enter your name (X or Y)">
+    <input id="target" placeholder="Call user (X or Y)">
+    <button onclick="registerUser()">Register</button>
+    <button onclick="callUser()">Call</button>
+    <button onclick="endCall()">End Call</button>
+    
+    <div id="incomingCall" style="display:none;">
+        <p>Incoming Call from <span id="callerName"></span></p>
+        <button onclick="answerCall()">Answer</button>
+    </div>
+
+    <p>Call Duration: <span id="callTimer">0:00</span></p>
+    <audio id="remoteAudio" autoplay></audio>
+
+    <script>
+        let peerConnection;
+        const ws = new WebSocket('ws://localhost:8080');
+        let localStream;
+        let callStartTime;
+        let timerInterval;
+        let incomingOffer = null;
+        let caller = "";
+
+        function registerUser() {
+            const username = document.getElementById('username').value;
+            ws.send(JSON.stringify({ type: 'register', name: username }));
+            alert(`Registered as ${username}`);
+        }
+
+        function updateCallTimer() {
+            const elapsedTime = Math.floor((Date.now() - callStartTime) / 1000);
+            const minutes = Math.floor(elapsedTime / 60);
+            const seconds = elapsedTime % 60;
+            document.getElementById('callTimer').textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+        }
+
+        async function callUser() {
+            const target = document.getElementById('target').value;
+            peerConnection = createPeerConnection();
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                ws.send(JSON.stringify({ type: 'call', target, offer, from: document.getElementById('username').value }));
+                console.log("Call offer sent to", target);
+            } catch (error) {
+                console.error("Error calling user:", error);
+            }
+        }
+
+        ws.onmessage = async (message) => {
+            const data = JSON.parse(message.data);
+            console.log("Message received:", data);
+
+            if (data.type === 'call') {
+                document.getElementById('incomingCall').style.display = 'block';
+                document.getElementById('callerName').textContent = data.from;
+                incomingOffer = data.offer;
+                caller = data.from;
+                console.log("Incoming call from", caller);
+            } else if (data.type === 'answer') {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                console.log("Call answered by", caller);
+                startCallTimer();
+            } else if (data.type === 'candidate') {
+                if (peerConnection) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    console.log("ICE candidate added");
+                }
+            }
+        };
+
+        function startCallTimer() {
+            callStartTime = Date.now();
+            timerInterval = setInterval(updateCallTimer, 1000);
+        }
+
+        function createPeerConnection() {
+            const pc = new RTCPeerConnection();
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({ type: 'candidate', target: document.getElementById('target').value, candidate: event.candidate }));
+                    console.log("ICE candidate sent");
+                }
+            };
+
+            pc.ontrack = (event) => {
+                document.getElementById('remoteAudio').srcObject = event.streams[0];
+                console.log("Remote audio track received");
+            };
+
+            return pc;
+        }
+
+        async function answerCall() {
+            document.getElementById('incomingCall').style.display = 'none';
+            peerConnection = createPeerConnection();
+            
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(incomingOffer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                ws.send(JSON.stringify({ type: 'answer', target: caller, answer }));
+                console.log("Call answer sent to", caller);
+
+                startCallTimer();
+            } catch (error) {
+                console.error("Error answering call:", error);
+            }
+        }
+
+        function endCall() {
+            if (peerConnection) {
+                peerConnection.close();
+                clearInterval(timerInterval);
+                document.getElementById('callTimer').textContent = "0:00";
+                document.getElementById('incomingCall').style.display = 'none';
+                console.log("Call ended");
+            }
+        }
+    </script>
+</body>
+</html>
